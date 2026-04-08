@@ -1,0 +1,162 @@
+# =========================
+# 🔹 OS & System Files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# 🔹 Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# 🔹 Logs & Runtime
+# =========================
+logs/
+*.log
+*.out
+*.err
+*.pid
+
+# AI agent logs
+agent_logs/
+execution_logs/
+traces/
+
+# =========================
+# 🔹 Environment Variables & Secrets
+# =========================
+.env
+.env.*
+secrets/
+*.key
+*.pem
+*.crt
+
+# =========================
+# 🔹 Jupyter / Notebooks
+# =========================
+.ipynb_checkpoints
+
+# =========================
+# 🔹 Data & Models (IMPORTANT)
+# =========================
+data/
+datasets/
+*.csv
+*.parquet
+*.h5
+*.pkl
+*.joblib
+
+# ML / LLM models
+models/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Vector DB / embeddings
+vector_store/
+faiss_index/
+*.faiss
+
+# =========================
+# 🔹 Cache / Temp
+# =========================
+.cache/
+tmp/
+temp/
+*.tmp
+
+# Redis dump
+dump.rdb
+
+# =========================
+# 🔹 Node / React (UI - Phase 10)
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+build/
+
+# =========================
+# 🔹 Frontend Env
+# =========================
+frontend/.env
+frontend/.env.local
+
+# =========================
+# 🔹 Docker / Infra
+# =========================
+.dockerignore
+docker-compose.override.yml
+
+# Docker volumes
+docker_data/
+
+# =========================
+# 🔹 Database
+# =========================
+*.sqlite3
+*.db
+
+# PostgreSQL dumps
+*.sql
+
+# =========================
+# 🔹 IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# 🔹 Testing
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# =========================
+# 🔹 Build / Artifacts
+# =========================
+artifacts/
+outputs/
+results/
+
+# =========================
+# 🔹 LLM / API Specific
+# =========================
+openai_cache/
+llm_cache/
+
+# =========================
+# 🔹 Misc
+# =========================
+*.bak
+*.backup
+*.old
