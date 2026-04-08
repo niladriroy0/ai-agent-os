@@ -1,2 +1,6 @@
-def log(message):
-    print(f"[LOG]: {message}")
+class LoggerTool:
+
+    name = "logger"
+
+    def execute(self, message):
+        print(f"[LOG]: {message}")
