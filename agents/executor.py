@@ -1,13 +1,18 @@
-from tools.math_tool import execute_math
-from tools.logger import log
+from tools.gateway import ToolGateway
 
 class ExecutorAgent:
 
+    def __init__(self):
+        self.gateway = ToolGateway()
+
     def execute(self, task):
-        log(f"Executing Task {task.task_id}")
+        # Log start
+        self.gateway.execute("logger", f"Executing Task {task.task_id}")
 
-        result = execute_math(task.payload)
+        # Execute math via gateway
+        result = self.gateway.execute("math", task.payload)
 
-        log(f"Result: {result}")
+        # Log result
+        self.gateway.execute("logger", f"Result: {result}")
 
         return result
