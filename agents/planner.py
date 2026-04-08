@@ -1,22 +1,25 @@
-from tools.logger import log
+from tools.gateway import ToolGateway
 
 class PlannerAgent:
+
+    def __init__(self):
+        self.gateway = ToolGateway()
 
     def plan(self, task):
         payload = task.payload
 
         # 🔒 Safety check
         if not payload or not isinstance(payload, str):
-            log("Planner received invalid payload")
+            self.gateway.execute("logger", "Planner received invalid payload")
             return []
 
-        # 🧠 Basic decomposition
+        # 🧠 Decomposition
         if "and" in payload:
             subtasks = [p.strip() for p in payload.split("and")]
         else:
             subtasks = [payload]
 
-        # 📜 Logging
-        log(f"Planner created subtasks: {subtasks}")
+        # 📜 Logging via gateway
+        self.gateway.execute("logger", f"Planner created subtasks: {subtasks}")
 
         return subtasks
