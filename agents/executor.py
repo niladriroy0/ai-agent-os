@@ -12,12 +12,13 @@ class ExecutorAgent:
         expression = task.payload
 
         # 🧠 Example: use memory keyword
-        if "previous" in expression and self.memory:
-            all_memory = self.memory.get_all()
+        if "previous" in expression:
+            if not self.memory or not self.memory.get_all():
+                return "Error: 'previous' referenced but no previous results found in memory"
 
-            if all_memory:
-                last_value = list(all_memory.values())[-1]
-                expression = expression.replace("previous", str(last_value))
+            all_memory = self.memory.get_all()
+            last_value = list(all_memory.values())[-1]
+            expression = expression.replace("previous", str(last_value))
 
         result = self.gateway.execute("math", expression)
 
