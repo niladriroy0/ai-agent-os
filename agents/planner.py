@@ -1,25 +1,40 @@
 from tools.gateway import ToolGateway
+from llm.client import LLMClient
+from llm.prompts import planner_prompt
+import ast
+import re
 
 class PlannerAgent:
 
     def __init__(self):
         self.gateway = ToolGateway()
+        self.llm = LLMClient()
 
     def plan(self, task):
         payload = task.payload
 
-        # 🔒 Safety check
         if not payload or not isinstance(payload, str):
-            self.gateway.execute("logger", "Planner received invalid payload")
+            self.gateway.execute("logger", "Invalid payload")
             return []
 
-        # 🧠 Decomposition
-        if "and" in payload:
-            subtasks = [p.strip() for p in payload.split("and")]
-        else:
-            subtasks = [payload]
+        # 🧠 LLM call
+        prompt = planner_prompt(payload)
+        response = self.llm.generate(prompt)
 
-        # 📜 Logging via gateway
-        self.gateway.execute("logger", f"Planner created subtasks: {subtasks}")
+        match = re.search(r"\[.*\]", response)
+
+        if match:
+            try:
+                subtasks = ast.literal_eval(match.group())
+            except:
+                subtasks = []
+        else:
+            subtasks = []
+
+        if not subtasks:
+            self.gateway.execute("logger", f"LLM parsing failed: {response}")
+            return []
+
+        self.gateway.execute("logger", f"LLM planned: {subtasks}")
 
         return subtasks
