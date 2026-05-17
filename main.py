@@ -1,18 +1,42 @@
+from brokers.producer import TaskProducer
+
 from models.task import Task
-from core.pipeline import Pipeline
+
 
 if __name__ == "__main__":
 
-    pipeline = Pipeline()
+    producer = TaskProducer()
 
-    task1 = Task(task_id=1, payload="2+2 and 10*5")
-    task2 = Task(task_id=2, payload="previous + 10")
+    # ==========================================
+    # TASK 1
+    # ==========================================
 
-    pipeline.scheduler.add_task(task1)
-    pipeline.scheduler.add_task(task2)
+    task1 = Task(
 
-    results = pipeline.scheduler.run(pipeline.process_task)
+        task_id="task_1",
 
-    print("\nFinal Results:")
-    for task_id, result in results:
-        print(f"Task {task_id}: {result}")
+        payload="2+2 and 10*5",
+
+        priority=1
+    )
+
+    # ==========================================
+    # TASK 2
+    # ==========================================
+
+    task2 = Task(
+
+        task_id="task_2",
+
+        payload="previous + 100",
+
+        priority=2
+    )
+
+    # ==========================================
+    # SEND TASKS
+    # ==========================================
+
+    producer.send_task(task1)
+
+    producer.send_task(task2)
