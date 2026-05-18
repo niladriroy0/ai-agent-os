@@ -6,24 +6,24 @@
 
 ## What Is This?
 
-`ai-agent-os` is an **AI agent orchestration framework** that processes tasks asynchronously at scale. It decouples task submission from execution using Apache Kafka as the message bus, and uses a local LLM (Mistral via Ollama) to plan and decompose tasks before execution.
+`ai-agent-os` is an **AI agent orchestration framework** that processes tasks asynchronously at scale. It decouples task submission from execution using Apache Kafka as the message bus, and uses a local LLM (Mistral via Ollama) to plan and decompose tasks before execution. It now includes a full observability layer, control plane, and an interactive dashboard.
 
 ---
 
 ## Architecture at a Glance
 
 ```
-main.py ──► TaskProducer ──► Kafka ──► TaskConsumer ──► Worker
-                                                            │
-                                                         Pipeline
-                                                            │
-                                           ┌────────────────┤
-                                       Scheduler       AgentManager
+main.py ──► TaskProducer ──► Kafka ──► TaskConsumer ──► Worker ◄──► Observability (Metrics, Audit, WS)
+                                                            │           │
+                                                         Pipeline       │
+                                                            │           ▼
+                                           ┌────────────────┤      FastAPI Control Plane
+                                       Scheduler       AgentManager     ▲
                                            │            Planner + Executor
-                                    (Priority Queue)        │
-                                                     LLM (Ollama/Mistral)
+                                    (Priority Queue)        │           ▼
+                                                     LLM (Ollama)   React Dashboard
                                                             │
-                                                       MathTool / Logger
+                                                       Tools / DB
 ```
 
 For full details, see [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md).
@@ -36,36 +36,23 @@ For full details, see [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md).
 ai-agent-os/
 ├── main.py                  # Entry point: publish tasks to Kafka
 ├── docker-compose.yml       # Kafka + Zookeeper services
-├── agents/
-│   ├── manager.py           # Orchestrates planner + executor
-│   ├── planner.py           # LLM-based task decomposition
-│   └── executor.py          # Runs subtasks via tools
-├── brokers/
-│   ├── producer.py          # Publishes tasks to Kafka
-│   └── consumer.py          # Reads tasks from Kafka
-├── config/
-│   └── kafka_config.py      # Broker URL and topic name
-├── core/
-│   ├── pipeline.py          # Main orchestration hub
-│   └── state.py             # Tracks task completion/failure
-├── llm/
-│   ├── client.py            # HTTP interface to Ollama
-│   └── prompts.py           # Prompt templates
-├── memory/
-│   └── memory_store.py      # In-process key-value result store
-├── models/
-│   └── task.py              # Task dataclass + TaskStatus enum
-├── scheduler/
-│   └── scheduler.py         # Priority queue + retry + dependency check
-├── tools/
-│   ├── gateway.py           # Single tool execution entry point
-│   ├── registry.py          # Maps tool names to instances
-│   ├── math_tool.py         # Evaluates math expressions
-│   └── logger.py            # Prints log messages
-├── workers/
-│   └── worker.py            # Kafka consumer loop + pipeline trigger
-└── logs/
-    └── system.log           # Runtime scheduler logs
+├── api/                     # FastAPI Control Plane and Routes
+├── dashboard/               # React / Vite Dashboard Frontend
+├── observability/           # Metrics, Execution Tracking, WebSockets
+├── agents/                  # Planner & Executor Agents
+├── brokers/                 # Kafka Producers & Consumers
+├── config/                  # Configuration (Kafka, etc.)
+├── core/                    # Pipeline & Execution State
+├── llm/                     # Ollama Client & Prompts
+├── memory/                  # In-process / Persistent memory stores
+├── models/                  # Data Models (Tasks, Status)
+├── policy/                  # Rate limiting & Permissions Engine
+├── registry/                # Agent Registry
+├── scheduler/               # Priority Queue Task Scheduler
+├── storage/                 # Redis & PostgreSQL Storage Adapters
+├── tools/                   # Extensible Tool Gateway & Logic
+├── workers/                 # Kafka Consumer Workers
+└── logs/                    # System & Audit Logs
 ```
 
 ---
@@ -75,9 +62,10 @@ ai-agent-os/
 | Requirement | Purpose |
 |---|---|
 | Python 3.9+ | Runtime |
+| Node.js / npm | React Dashboard Frontend |
 | Docker + Docker Compose | Kafka + Zookeeper |
 | Ollama + Mistral | Local LLM server |
-| `kafka-python`, `requests` | Python dependencies |
+| PostgreSQL / Redis | Persistent Storage (Optional depending on config) |
 
 ---
 
@@ -88,15 +76,23 @@ ai-agent-os/
 docker-compose up -d
 
 # 2. Install dependencies
-pip install kafka-python requests
+pip install -r requirements.txt
 
 # 3. Start Ollama
 ollama run mistral
 
 # 4. Start the worker (terminal 1)
-python workers/worker.py
+python -m workers.worker
 
-# 5. Publish tasks (terminal 2)
+# 5. Start the FastAPI Control Plane (terminal 2)
+uvicorn api.server:app --reload
+
+# 6. Start the React Dashboard (terminal 3)
+cd dashboard/frontend
+npm install
+npm run dev
+
+# 7. Publish tasks (terminal 4)
 python main.py
 ```
 
@@ -123,7 +119,7 @@ Task(task_id="task_2", payload="previous + 100")
 
 ## Logs
 
-Scheduler events are written to `logs/system.log`:
+Scheduler events are written to `logs/system.log` and `logs/audit.log`:
 
 ```
 2026-05-17 01:00:00 | INFO | Task Added: task_1

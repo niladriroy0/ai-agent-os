@@ -6,14 +6,15 @@
 
 ## 1. Overview
 
-`ai-agent-os` is a **multi-agent orchestration framework** that processes tasks in a distributed manner. Tasks are submitted by producers, transported through Apache Kafka, consumed by workers, and then processed through a layered pipeline of agents, schedulers, tools, and memory — with results persisted and logged at each step.
+`ai-agent-os` is a **multi-agent orchestration framework** that processes tasks in a distributed manner. Tasks are submitted by producers, transported through Apache Kafka, consumed by workers, and then processed through a layered pipeline of agents, schedulers, tools, and memory — with results persisted and logged at each step. The system is monitored via an Observability layer, managed via a FastAPI Control Plane, and visualized in a React Dashboard.
 
-The system is intentionally architected in two halves:
+The system is intentionally architected in three main components:
 
-| Half | Responsibility |
+| Component | Responsibility |
 |---|---|
 | **Ingestion Layer** | `main.py` → `TaskProducer` → Kafka topic |
 | **Execution Layer** | `Worker` → `TaskConsumer` → `Pipeline` → Agents → Tools |
+| **Control & View** | `FastAPI Control Plane` ↔ `React Dashboard` ↔ `Observability WebSockets` |
 
 ---
 
@@ -43,26 +44,34 @@ The system is intentionally architected in two halves:
 │      └──► Pipeline (core/pipeline.py)                            │
 │               │                                                  │
 │               ├──► Scheduler (scheduler/scheduler.py)            │
-│               │        ├── Priority Queue (heapq)                │
-│               │        ├── Dependency Resolution                 │
-│               │        └── Retry Logic (max 2 retries)           │
 │               │                                                  │
 │               ├──► AgentManager (agents/manager.py)              │
 │               │        ├──► PlannerAgent (agents/planner.py)     │
-│               │        │        ├── LLMClient → Ollama           │
-│               │        │        └── Regex + ast subtask parser   │
+│               │        │        └── LLMClient → Ollama           │
 │               │        └──► ExecutorAgent (agents/executor.py)   │
-│               │                 ├── Memory context injection      │
-│               │        │        └── ToolGateway → MathTool       │
+│               │                 ├── ToolGateway → MathTool       │
 │               │                                                  │
-│               ├──► MemoryStore (memory/memory_store.py)          │
-│               │        └── In-process key-value store            │
+│               ├──► Storage/Memory (storage/, memory/)            │
+│               │        └── Redis / PostgreSQL / In-Memory        │
 │               │                                                  │
-│               └──► ExecutionState (core/state.py)                │
-│                        └── Tracks completed / failed task IDs    │
+│               ├──► Policy Engine (policy/)                       │
+│               │        └── Rate limiting and Permissions         │
+│               │                                                  │
+│               └──► Observability (observability/)                │
+│                        ├── Metrics Collector                     │
+│                        ├── Execution Tracker                     │
+│                        └── WebSocket Manager                     │
 └──────────────────────────────────────────────────────────────────┘
-                             │
-                      logs/system.log
+                             │ (Logs, Metrics, Status)
+                             ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                 CONTROL PLANE & FRONTEND                         │
+│                                                                  │
+│   FastAPI Server (api/server.py)                                 │
+│      │                                                           │
+│      └──► React/Vite Dashboard (dashboard/)                      │
+│               └── Real-time WebSocket Updates                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -72,10 +81,6 @@ The system is intentionally architected in two halves:
 ### 3.1 Entry Point — `main.py`
 
 The script that seeds the system with tasks. Creates `Task` objects and calls `TaskProducer.send_task()` for each one. Tasks are plain Python objects serialized to JSON before publishing to Kafka.
-
-**Current demo tasks:**
-- `task_1` — payload: `"2+2 and 10*5"`, priority 1
-- `task_2` — payload: `"previous + 100"`, priority 2 (depends on `task_1`'s result in memory)
 
 ---
 
@@ -87,137 +92,89 @@ The script that seeds the system with tasks. Creates `Task` objects and calls `T
 | `brokers/consumer.py` | `TaskConsumer` | Subscribes to `"agent_tasks"` topic, yields raw message dicts |
 | `config/kafka_config.py` | — | Constants: `KAFKA_BROKER = "localhost:9092"`, `TASK_TOPIC = "agent_tasks"` |
 
-The Kafka broker + Zookeeper are managed via `docker-compose.yml` using Confluent's official images (`cp-kafka:7.5.0`, `cp-zookeeper:7.5.0`).
-
 ---
 
 ### 3.3 Worker — `workers/worker.py`
 
-`Worker` is the long-running process on the consumer side. It:
-1. Instantiates `TaskConsumer` and `Pipeline`.
-2. Enters an infinite loop, yielding messages from Kafka.
-3. Reconstructs full `Task` objects from the raw JSON dict.
-4. Calls `Pipeline.process_task(task)` and prints results.
-5. Handles graceful shutdown on `KeyboardInterrupt`.
-
-This file is also the `__main__` entry point for the worker process.
+`Worker` is the long-running process on the consumer side. It enters an infinite loop, yielding messages from Kafka, calls `Pipeline.process_task(task)` and updates the Observability layer with its heartbeat via `WorkerMonitor`.
 
 ---
 
 ### 3.4 Core Pipeline — `core/pipeline.py`
 
-`Pipeline` is the orchestration hub on the worker side. It owns:
-- A `MemoryStore` instance (shared across all task executions)
-- An `AgentManager` instance (handles planner + executor agents)
-- A `Scheduler` instance (manages queue + retry logic)
-
-**`process_task(task)`** — runs the agent manager on a single task, saves results to memory, updates task status, returns a result dict.
-
-**`run(task)`** — adds task to scheduler queue, then calls `scheduler.run(self.process_task)`.
+`Pipeline` is the orchestration hub on the worker side. It runs the agent manager on a single task, saves results to memory/storage, updates task status, and orchestrates the dependency and retry logic via `Scheduler`.
 
 ---
 
 ### 3.5 Scheduler — `scheduler/scheduler.py`
 
-The scheduler is a **synchronous priority-queue executor** using Python's `heapq`. Key design decisions made during development:
-
-| Feature | Implementation |
-|---|---|
-| Priority Queue | `heapq` — lower `priority` integer = higher urgency |
-| Dependency Checking | Loops through `task.dependencies` list, checks `ExecutionState` |
-| Retry Logic | Up to `max_retries=2` automatic retries on exception |
-| Task Re-queuing | Failed/waiting tasks pushed back into heap |
-| Execution | Direct synchronous call (no `ThreadPoolExecutor` — removed to fix Windows deadlock) |
-| Logging | Writes to `logs/system.log` via Python `logging` module |
-
-**Scheduler flow:**
-```
-heapq.heappop() → dependency check → mark_running() → execute_task() → mark_completed() / retry / mark_failed()
-```
+The scheduler is a **synchronous priority-queue executor** using Python's `heapq` and dependency checking logic against the core state.
 
 ---
 
 ### 3.6 Agent Layer — `agents/`
 
-#### `AgentManager` (`agents/manager.py`)
-Orchestrates the two-agent workflow for each task:
-1. Calls `PlannerAgent.plan(task)` to decompose the task into subtasks.
-2. Iterates over subtasks, creates child `Task` objects, calls `ExecutorAgent.execute()` on each.
-3. Returns a list of results.
-
-#### `PlannerAgent` (`agents/planner.py`)
-- Accepts a `Task`, extracts the `payload` string.
-- Builds a prompt using `planner_prompt()` from `llm/prompts.py`.
-- Calls `LLMClient.generate()` to get a plan from the local Mistral model.
-- Uses `re.search(r"\[.*\]", response)` + `ast.literal_eval()` to parse a Python list of subtask strings from the LLM's response.
-- Falls back gracefully if parsing fails; logs via `LoggerTool`.
-
-#### `ExecutorAgent` (`agents/executor.py`)
-- Takes a single subtask `Task`.
-- If the payload contains the keyword `"previous"`, looks up the last entry in `MemoryStore` and substitutes it into the expression.
-- Executes the final expression via `ToolGateway → MathTool`.
-- Logs execution and result.
+- **`AgentManager`**: Orchestrates the two-agent workflow.
+- **`PlannerAgent`**: Uses LLM client to parse and decompose tasks.
+- **`ExecutorAgent`**: Substitutes memory context and calls tools.
 
 ---
 
 ### 3.7 LLM Layer — `llm/`
 
-| File | Class / Function | Role |
-|---|---|---|
-| `llm/client.py` | `LLMClient` | HTTP POST to Ollama `/api/generate`, model: `mistral:latest`, timeout: 120s, graceful fallback on error |
-| `llm/prompts.py` | `planner_prompt(task)` | Returns the system prompt instructing the LLM to output only a Python list of math expressions |
-
-The LLM is a **local Ollama instance** running on `http://localhost:11434`. No cloud API calls are made.
+Interacts directly with a local **Ollama** instance via `LLMClient`. Uses structured prompts from `prompts.py` to command models like `mistral:latest`.
 
 ---
 
 ### 3.8 Tools Layer — `tools/`
 
-| File | Class | Role |
-|---|---|---|
-| `tools/registry.py` | `ToolRegistry` | Dictionary of registered tools, indexed by `tool.name` |
-| `tools/gateway.py` | `ToolGateway` | Single entry point for tool execution; looks up tool in registry and calls `tool.execute()` |
-| `tools/math_tool.py` | `MathTool` | `name="math"` — evaluates arbitrary math expressions using Python `eval()` |
-| `tools/logger.py` | `LoggerTool` | `name="logger"` — prints a `[LOG]:` prefixed message to stdout |
-
-> **Future extension points noted in `gateway.py`:** permission checks, rate limiting, and logging middleware are scaffolded as comments.
+Contains the `ToolRegistry` and `ToolGateway`. Gateways are extensible to incorporate permissions, rate limits, and custom logic for various tools like `MathTool` and `LoggerTool`.
 
 ---
 
 ### 3.9 Data Models — `models/`
 
-#### `Task` (`models/task.py`)
-
-| Attribute | Type | Description |
-|---|---|---|
-| `task_id` | `str` | Unique identifier |
-| `payload` | `str` | The raw task instruction / expression |
-| `priority` | `int` | Lower = higher priority in heap (default: 5) |
-| `dependencies` | `list[str]` | Task IDs that must complete first |
-| `timeout` | `int` | Max seconds allowed (default: 10, not enforced in current scheduler) |
-| `status` | `TaskStatus` | Enum: `PENDING`, `RUNNING`, `COMPLETED`, `FAILED` |
-| `created_at` | `datetime` | UTC timestamp at creation |
-| `retries` | `int` | Retry count used by scheduler |
-| `result` | `any` | Final result stored after execution |
-
-`Task.__lt__` is implemented so `heapq` can compare tasks by priority.
+Contains the definitions for `Task` and `TaskStatus`.
 
 ---
 
-### 3.10 Memory — `memory/memory_store.py`
+### 3.10 Memory — `memory/`
 
-`MemoryStore` is a **simple in-process key-value store** (`dict`). It provides:
-- `save(key, value)` — stores a result
-- `get(key)` — retrieves by key
-- `get_all()` — returns entire store (used by `ExecutorAgent` to find `"previous"`)
-
-> ⚠️ **Current limitation:** Memory is not persisted across worker restarts. It lives for the lifetime of the `Pipeline` object.
+Handles memory resolution, providing the `previous` context to sequential tasks.
 
 ---
 
-### 3.11 State Tracking — `core/state.py`
+### 3.11 Observability Layer — `observability/` (New)
 
-`ExecutionState` tracks which task IDs have been completed or failed using Python `set`s. It is used by the `Scheduler` for dependency resolution.
+The observability layer handles metrics, health tracking, and event emission:
+- **`audit_logger.py`**: Logs sensitive and administrative actions to `logs/audit.log`.
+- **`execution_tracker.py`**: Tracks active task status and history across all workers.
+- **`metrics_collector.py`**: Collects generic metrics.
+- **`worker_monitor.py`**: Monitors worker health and heartbeat.
+- **`websocket_manager.py`**: Pushes live events directly to connected clients (like the Dashboard).
+
+---
+
+### 3.12 Control Plane / API Layer — `api/` (New)
+
+A **FastAPI** backend that exposes REST endpoints and WebSockets for monitoring and controlling the entire cluster.
+- **`server.py`**: Main application setup.
+- **`routes/`**: Distinct routers for `tasks.py`, `workers.py`, `metrics.py`, `events.py`, `audit.py`, and `memory.py`.
+
+---
+
+### 3.13 Dashboard Frontend — `dashboard/` (New)
+
+A **React + Vite + Tailwind** frontend that serves as the visual command center.
+- Connects to the FastAPI backend via standard HTTP requests and WebSockets (`useWebSocket.ts`).
+- Displays live streaming logs, task statuses, worker health, and system metrics.
+
+---
+
+### 3.14 Storage & Policy — `storage/` & `policy/` (New)
+
+- **`storage/`**: Includes modules for `redis_store.py` and `postgres_store.py` to persist data beyond the life of the worker process.
+- **`policy/`**: Contains `engine.py`, `permissions.py`, and `rate_limiter.py` to restrict tool access and ensure secure execution within the `ToolGateway`.
 
 ---
 
@@ -225,32 +182,25 @@ The LLM is a **local Ollama instance** running on `http://localhost:11434`. No c
 
 ```
 1. main.py creates Task objects
-2. TaskProducer serializes them to JSON and publishes to Kafka "agent_tasks" topic
-3. Worker's TaskConsumer picks up the message
-4. Worker reconstructs Task and calls Pipeline.process_task()
-5. Pipeline passes task to AgentManager.handle_task()
-6. AgentManager calls PlannerAgent.plan() → LLM returns subtask list
-7. AgentManager iterates subtasks → ExecutorAgent.execute() for each
-8. ExecutorAgent resolves "previous" from MemoryStore (if needed)
-9. ExecutorAgent calls ToolGateway → MathTool.execute() → eval()
-10. Results stored in MemoryStore, task marked COMPLETED
-11. Pipeline returns result dict → Worker prints it
-12. Scheduler logs final state to logs/system.log
+2. TaskProducer publishes to Kafka "agent_tasks"
+3. Worker picks up the message and emits "task_started" event via WebSocket
+4. Pipeline passes task to AgentManager
+5. PlannerAgent plans via Ollama LLM
+6. ExecutorAgent calls ToolGateway → applies Policy constraints → executes tool
+7. Results stored in Storage (Redis/Postgres) and Memory
+8. Pipeline returns result dict
+9. WebSocket broadcasts "task_completed"
+10. Dashboard UI updates instantly with the latest state
 ```
 
 ---
 
 ## 5. Infrastructure — `docker-compose.yml`
 
-| Service | Image | Port | Role |
-|---|---|---|---|
-| `zookeeper` | `confluentinc/cp-zookeeper:7.5.0` | `2181` | Kafka coordination / leader election |
-| `kafka` | `confluentinc/cp-kafka:7.5.0` | `9092` | Message broker |
-
-Start with:
-```bash
-docker-compose up -d
-```
+| Service | Image | Role |
+|---|---|---|
+| `zookeeper` | `confluentinc/cp-zookeeper:7.5.0` | Kafka coordination / leader election |
+| `kafka` | `confluentinc/cp-kafka:7.5.0` | Message broker |
 
 ---
 
@@ -258,10 +208,6 @@ docker-compose up -d
 
 | Area | Current State | Future Direction |
 |---|---|---|
-| Memory | In-process dict | Redis / persistent vector store |
 | LLM | Local Ollama only | Cloud LLM support (OpenAI, Anthropic) |
-| Tools | MathTool + LoggerTool only | Plugin-based dynamic tool registry |
 | Scheduler | Synchronous direct execution | Async task execution with proper timeout |
-| Worker | Single worker process | Horizontal scaling via Kafka consumer groups |
-| Security | No auth/authz on tool execution | Permission model in ToolGateway |
-| Monitoring | File-based log only | Metrics dashboard (Prometheus/Grafana) |
+| Infrastructure | Minimal compose | Full stack in Docker (Postgres, Redis, Backend, Frontend) |
